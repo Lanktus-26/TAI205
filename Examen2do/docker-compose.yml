@@ -1,0 +1,8 @@
+services:
+  api:
+    build: .
+    container_name: Examen
+    ports:
+      - "5005:5005"
+    volumes:
+      - ./app:/app/app
