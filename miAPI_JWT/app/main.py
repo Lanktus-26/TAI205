@@ -3,13 +3,14 @@ from fastapi import FastAPI,status,HTTPException, Depends
 from typing import Optional
 import asyncio 
 from pydantic import BaseModel,Field
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-import secrets
+from datetime import datetime, timedelta
+from jose import JWTError, jwt
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 
 
 #2. inicializacion APP
-app= FastAPI(
+app= FastAPII(
     title='Mi primer API',
     description='Gerardo Joshua Piña Rivera',
     version='1.0.0' 
@@ -27,19 +28,38 @@ class crear_usuario(BaseModel):
     nombre: str = Field(..., min_length=3, max_length=50, example="Juanita")
     edad: int = Field(..., ge=1, le=123, description="Edad valida entre 1 y 123")
     
-#seguridad HTTP Basic
-seguridad = HTTPBasic()
-def verificar_peticion(credenciales:HTTPBasicCredentials=Depends(seguridad)):
-    userAuth= secrets.compare_digest(credenciales.username,"lanktus")
-    passAuth= secrets.compare_digest(credenciales.password,"123456")
-    
-    if not(userAuth and passAuth):
-        raise HTTPException(
-            status_code= status.HTTP_401_UNAUTHORIZED,
-            detail="Credenciales no Autorizadas"
-        )
-    return credenciales.username
-        
+#Seguridad OAuth2 + JWT
+SECRET_KEY = "lanktus123"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
+
+#credenciales de prueba
+VALID_USERNAME = "lanktus"
+VALID_PASSWORD = "123456"
+
+#creacion del token
+def crear_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+#verificion
+def verificar_token(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None or username != VALID_USERNAME:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token inválido o usuario no existe")
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expirado o no es válido")
+    return username
 
 
 #3. endpoints
@@ -103,8 +123,20 @@ async def crear_usuario(usuario:crear_usuario):
         "ususario":usuario
     }
     
+# token endpoint (OAuth2)
+@app.post("/token", tags=["Autenticación"])
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    if form_data.username == VALID_USERNAME and form_data.password == VALID_PASSWORD:
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = crear_access_token(
+            data={"sub": form_data.username}, expires_delta=access_token_expires
+        )
+        return {"access_token": access_token, "token_type": "bearer"}
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Credenciales inválidas")
+
+# endpoints protegidos con OAuth2 JWT
 @app.put("/v1/usuarios/", tags=["CRUD HTTP"])
-async def actualizar_usuario(id:str, usuario:dict):
+async def actualizar_usuario(id: str, usuario: dict, current_user: str = Depends(verificar_token)):
     for i, usr in enumerate(usuarios):
         if usr["id"] == id:
             usuario["id"] = id
@@ -112,24 +144,19 @@ async def actualizar_usuario(id:str, usuario:dict):
             return {
                 "mensaje": "Usuario actualizado correctamente",
                 "status": "200",
-                "usuario": usuario
+                "usuario": usuario,
+                "actualizado_por": current_user
             }
-    raise HTTPException(
-        status_code=404,
-        detail="Usuario no encontrado"
-    )
+    raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
 @app.delete("/v1/usuarios/", tags=["CRUD HTTP"])
-async def eliminar_usuario(id:str,userAuth:str=Depends(verificar_peticion)):
+async def eliminar_usuario(id: str, current_user: str = Depends(verificar_token)):
     for i, usr in enumerate(usuarios):
         if usr["id"] == id:
             eliminado = usuarios.pop(i)
             return {
-                "mensaje":f"Elimiado por {userAuth}",
+                "mensaje": f"Eliminado por {current_user}",
                 "status": "200",
                 "usuario": eliminado
             }
-    raise HTTPException(
-        status_code=404,
-        detail="Usuario no encontrado"
-    )
+    raise HTTPException(status_code=404, detail="Usuario no encontrado")
